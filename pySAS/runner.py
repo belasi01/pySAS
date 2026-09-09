@@ -92,12 +92,14 @@ class Runner:
         self.posmv = None
         if 'POSMV' in self.cfg.sections():
             self.posmv = POSMV(self.cfg, self.data_logger)
-        # Sync pitch/roll raw-logging flags with the configured motion_source (THS itself needs no
-        # flag: it's part of HyperSAS's own native frame stream, always written when HyperSAS is on)
+        # Sync IMU's pitch/roll raw-logging flag with the configured motion_source (THS itself needs
+        # no flag: it's part of HyperSAS's own native frame stream, always written when HyperSAS is
+        # on). POSMV's own _log_data/_log_attitude are left alone here -- they're only ever toggled
+        # by start_logging()/stop_logging() and start_logging_attitude()/stop_logging_attitude(),
+        # called from the same wakeup()/go_to_sleep()/run_manual() sites as GPS, so POS MV doesn't
+        # keep writing $GPRMC/SATTHS while HyperSAS isn't actually measuring.
         if self.imu:
             self.imu._log_data = self.motion_source == 'imu'
-        if self.posmv:
-            self.posmv._log_attitude = self.motion_source == 'posmv'
 
         # Set operation mode and start thread
         self.operation_mode = self.cfg.get('Runner', 'operation_mode', fallback='auto')
@@ -242,12 +244,21 @@ class Runner:
                 # Do things only if HyperSAS is not measuring
                 if not self.hypersas.alive:
                     self.gps.stop_logging()
+                    if self.posmv:
+                        self.posmv.stop_logging()
+                        self.posmv.stop_logging_attitude()
                     self._wait(iteration_timestamp)
                     continue
-                # Turn on GPS logging (step does nothing if already on), unless POS MV is the active
-                # position source -- avoid writing two independent $GPRMC streams to the raw files
+                # Turn on GPS/POSMV logging (step does nothing if already on) -- whichever is the
+                # active heading_source/motion_source, to avoid writing two independent $GPRMC or
+                # SATTHS streams to the raw files, and to avoid POS MV logging when HyperSAS isn't
+                # actually measuring
                 if self.heading_source != 'posmv_heading':
                     self.gps.start_logging()
+                elif self.posmv:
+                    self.posmv.start_logging()
+                if self.posmv and self.motion_source == 'posmv':
+                    self.posmv.start_logging_attitude()
                 # Write Tower Data (requires gps, sun position, and tower position)
                 self.data_logger.write(*self.make_umtwr_frame())
             except Exception as e:
@@ -289,6 +300,9 @@ class Runner:
                 if self.imu:
                     self.imu.stop()
                 self.gps.stop_logging()
+                if self.posmv:
+                    self.posmv.stop_logging()
+                    self.posmv.stop_logging_attitude()
                 self.asleep = True
         # Reset wake-up timer if still asleep way passed wake-up delay
         if (self.asleep and self.stop_sleep_timestamp and
@@ -317,6 +331,10 @@ class Runner:
                 # active position source
                 if self.heading_source != 'posmv_heading':
                     self.gps.start_logging()
+                elif self.posmv:
+                    self.posmv.start_logging()
+                if self.posmv and self.motion_source == 'posmv':
+                    self.posmv.start_logging_attitude()
                 if self.es:
                     self.es.start()
                 if self.imu:

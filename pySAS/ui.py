@@ -250,7 +250,13 @@ def set_hypersas_switch(switch):
             if runner.es:
                 runner.es.start()
             runner.hypersas.start()
-            runner.gps.start_logging()  # Must start after hypersas otherwise Runner.run_manual could stop GPS logging
+            # Must start after hypersas otherwise Runner.run_manual could stop GPS/POSMV logging
+            if runner.heading_source != 'posmv_heading':
+                runner.gps.start_logging()
+            elif runner.posmv:
+                runner.posmv.start_logging()
+            if runner.posmv and runner.motion_source == 'posmv':
+                runner.posmv.start_logging_attitude()
         else:
             logger.debug('set_hypersas_switch: stop')
             runner.hypersas.stop()
@@ -259,6 +265,9 @@ def set_hypersas_switch(switch):
             if runner.imu:
                 runner.imu.stop()
             runner.gps.stop_logging()
+            if runner.posmv:
+                runner.posmv.stop_logging()
+                runner.posmv.stop_logging_attitude()
 
 
 @app.callback(Output('no_output', 'children', allow_duplicate=True),
@@ -681,16 +690,27 @@ def save_settings(save_click, heading_source, motion_source, prt, stb, gps, towe
     # Save Other settings
     runner.heading_source = heading_source
     runner.set_cfg_variable('Runner', 'heading_source', heading_source)
+    # Apply logging switch immediately rather than waiting for the next wakeup()/run_manual()
+    # cycle, so raw files only ever get one $GPRMC stream (GPS or POS MV, never both), and POS MV
+    # only logs while HyperSAS is actually measuring.
     if heading_source == 'posmv_heading':
-        # Stop the onboard GPS's own $GPRMC logging immediately rather than waiting for the next
-        # wakeup()/run_manual() cycle, so raw files only get POS MV's position stream from now on
         runner.gps.stop_logging()
+        if runner.posmv and runner.hypersas.alive:
+            runner.posmv.start_logging()
+    else:
+        if runner.posmv:
+            runner.posmv.stop_logging()
+        if runner.hypersas.alive:
+            runner.gps.start_logging()
     runner.motion_source = motion_source
     runner.set_cfg_variable('Runner', 'motion_source', motion_source)
     if runner.imu:
         runner.imu._log_data = motion_source == 'imu'
     if runner.posmv:
-        runner.posmv._log_attitude = motion_source == 'posmv'
+        if motion_source == 'posmv' and runner.hypersas.alive:
+            runner.posmv.start_logging_attitude()
+        else:
+            runner.posmv.stop_logging_attitude()
     runner.pilot.set_tower_limits([prt, stb])
     runner.set_cfg_variable('AutoPilot', 'valid_indexing_table_orientation_limits', [prt, stb])
     runner.pilot.target = optimal_az

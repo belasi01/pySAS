@@ -751,7 +751,6 @@ class POSMV(Sensor):
                     self.__logger.critical(e)
                     return
                 self.alive = True
-                self._log_data = True
                 self._thread = Thread(name=self.__class__.__name__, target=self.run)
                 self._thread.daemon = True
                 self._thread.start()
@@ -772,6 +771,49 @@ class POSMV(Sensor):
                 self._data_logger.close()  # Required to start new log_data file when instrument restart
         finally:
             self.busy = False
+
+    def start_logging(self):
+        # Gates $GPRMC writing, mirrors GPS.start_logging(); called by Runner when heading_source
+        # actually needs POS MV's position, not unconditionally on connect, so pySAS doesn't log a
+        # continuous GPRMC stream whether or not HyperSAS is measuring.
+        if not self._log_data:
+            self.__logger.debug('start logging')
+            if not self.alive:
+                self.__logger.info('not alive')
+            self._log_data = True
+
+    def stop_logging(self):
+        if self._log_data:
+            self.__logger.debug('stop logging')
+            self._log_data = False
+            if self._data_logger_lock.acquire(timeout=2):
+                try:
+                    self._data_logger.close()
+                finally:
+                    self._data_logger_lock.release()
+            else:
+                self.__logger.warning('Unable to acquire data_logger to close file')
+
+    def start_logging_attitude(self):
+        # Same as start_logging()/stop_logging() but for the SATTHS-like pitch/roll frame,
+        # gated by motion_source instead of heading_source.
+        if not self._log_attitude:
+            self.__logger.debug('start logging attitude')
+            if not self.alive:
+                self.__logger.info('not alive')
+            self._log_attitude = True
+
+    def stop_logging_attitude(self):
+        if self._log_attitude:
+            self.__logger.debug('stop logging attitude')
+            self._log_attitude = False
+            if self._data_logger_lock.acquire(timeout=2):
+                try:
+                    self._data_logger.close()
+                finally:
+                    self._data_logger_lock.release()
+            else:
+                self.__logger.warning('Unable to acquire data_logger to close file')
 
     def run(self):
         buffer = ''
